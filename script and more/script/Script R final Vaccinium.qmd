@@ -1,0 +1,761 @@
+---
+title: "Script Trondelag"
+format: docx
+editor: Marine Jattiot
+---
+
+## Quarto
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+# TRONDELAG
+
+**Ddownload useful packages :**
+
+```{r}
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(plyr)
+library(visreg)
+library(nlme)
+library(MASS)
+library(lme4)
+library(MuMIn)
+library(corrplot)
+library(sandwich)
+library(ade4)
+
+rm(list=ls(all=TRUE))
+```
+
+## **PREPARATION OF SUMMER BROWSING DATABASE (d)**
+
+**Database download :**
+
+```{r}
+d<-read.delim("summerBrowsing.csv",sep=";")
+```
+
+**Renaming the columns to have shorter names :**
+
+```{r}
+  d$adminNames<-as.factor(word(d$administrativeNames,-1))
+  d$shortloc<-as.factor(word(d$locality, 2,sep = fixed("|")))
+  d$NEWloc<-as.factor(ifelse(d$experiment=="Browsed",
+            str_sub(d$siteNumber,start=1,end=-2),str_sub(d$siteNumber,start=1,end=-3))) # use of the short code (as siteNumber) for LOCALITY
+  d$siteNumber<-as.factor(d$siteNumber)
+  d$Region<-as.factor(mapvalues(d$NaTron_datasetName,from=unique(d$NaTron_datasetName),c("Hedmark","Telemark","Tingvoll","Trondelag")))
+  d$longi<-as.numeric(gsub(",",".",d$decimalLongitude))
+  d$lati<-as.numeric(gsub(",",".",d$decimalLatitude))
+  d$exp<-as.factor(d$experiment)
+  d$year<-as.factor(d$year)
+  d$yearc<-as.numeric(as.character(d$year)) ## year as a continuous variable
+  
+  d$recNum<-d$recordNumber
+  d$recNum_0<-ifelse(d$recNum==0,1,0) # indicator of "0" on recordnumber
+  d$recNum_NA<-ifelse(is.na(d$recNum)==T,1,0) # indicator of "NA" on recordnumber
+  
+  d$nbframe_occCOUNT<-d$number.of.frames.per.occurrence..count.
+  d$nbframe<-d$number.of.frames.per.plot..count
+  d$nbframe_NA<-ifelse(is.na(d$nbframe)==T,1,0) # indicator of NA on nbframe per plotcount
+  d$nbframe_0<-ifelse(d$nbframe==0,1,0) # indicator of "0" on nbframe per plotcount
+  d$nbflowers<-d$number.of.flowers..count.
+  
+  d$BUB<-as.factor(d$browsed..boolean.) ## a factor with yes and no -!! and some other values to correct!!
+  d$BUB[d$BUB=="0"]<-"No"
+  d$BUB[d$BUB%in%c("1","2","3")]<-"Yes"
+
+  d$BUB<-droplevels(d$BUB)
+  d$BUB01<-as.numeric(as.character(mapvalues(d$BUB,c("No","Yes"),c(0,1)))) # a binary variable with 0=UB and 1 =B
+  d$BUB01_NA<-ifelse(is.na(d$BUB01)==T,1,0) # indicator of NA on BUB01 
+
+  d$nbleaves<-as.numeric(d$number.of.leaves..count.)
+  d$shootlg<-d$shoot.length..centimeter.
+  d$shootlg_NA<-ifelse(is.na(d$shootlg)==T,1,0) # indicator of NA on shootlg 
+  d$shootlg_0<-ifelse(d$shootlg==0,1,0) # indicator of 0 on shootlg 
+```
+
+**We choose the region :**
+
+```{r}
+d<-droplevels(d[d$Region=="Trondelag",])
+```
+
+**Creation of new composite variables :**
+
+```{r}
+d$SiteStation<-as.factor(paste(d$siteNumber,d$stationNumber,sep="_"))
+d$SiteStationYear<-as.factor(paste(d$siteNumber,d$stationNumber,d$year,sep="_"))
+d$SiteYear<-as.factor(paste(d$siteNumber,d$year,sep="_"))
+```
+
+**Datafile with all modalities per station per site per year :**
+
+```{r}
+fic0<-expand.grid(year=unique(d$year),stationNumber=unique(d$stationNumber),NEWloc=unique(d$NEWloc),exp=unique(d$experiment))
+fic0$exp<-mapvalues(fic0$exp,from=c("Browsed","Unbrowsed"),c("B","UB"))
+fic0$siteNumber<-paste(fic0$NEWloc,fic0$exp,sep="")
+fic0$SiteStationYear<-as.factor(paste(fic0$siteNumber,fic0$stationNumber,fic0$year,sep="_"))
+```
+
+For Trondelag, fic0 has 2400 lines= 8 years, 30 sites (15 localities x 2 experimental modalities B /UB) and 10 stations per site
+
+**Datafile with all modalities per site per year :**
+
+```{r}
+fic1<-expand.grid(year=unique(d$year),NEWloc=unique(d$NEWloc),exp=unique(d$experiment))
+fic1$exp<-mapvalues(fic1$exp,from=c("Browsed","Unbrowsed"),c("B","UB"))
+fic1$siteNumber<-paste(fic1$NEWloc,fic1$exp,sep="")
+fic1$SiteYear<-as.factor(paste(fic1$siteNumber,fic1$year,sep="_"))
+```
+
+For Trondelag, fic1 has 240 lines= 8 years, 30 sites (15 localities x 2 experimental modalities B /UB)
+
+**Creating a smaller file with columns of interest and short column names :**
+
+```{r}
+d2<-d[,c("Region","NEWloc","siteNumber","SiteYear","SiteStationYear",
+         "exp","year","yearc","scientificName","recNum","recNum_0","recNum_NA",
+         "BUB01","BUB01_NA","nbframe","nbframe_NA","nbframe_0","shootlg","shootlg_0","shootlg_NA")]
+```
+
+**We'll start with Vaccinium first : Creating a database containing only Vaccinium :**
+
+```{r}
+dvac<-droplevels(d2[d2$scientificName=="Vaccinium myrtillus",])
+```
+
+**#Aggregating the values of RESPONSE variable at the station level, so with "SiteStationYear" :**
+
+```{r}
+#dvac<-dvac2
+```
+
+**For "shoot length" :**
+
+```{r}
+temp_mean<-with(dvac,aggregate(shootlg,list(SiteStationYear=dvac$SiteStationYear),mean,na.rm=T))
+  colnames(temp_mean)<-c("SiteStationYear","meanshootlg")
+    mergefile1<-merge(fic0,temp_mean,by="SiteStationYear",all.x=T)
+    head(mergefile1,50)
+    dim(mergefile1)
+    dim(mergefile1[is.na(mergefile1$meanshootlg)==T,])
+    
+temp_mean_nb<-aggregate(dvac$shootlg[is.na(dvac$shootlg)==F],list(SiteStationYear=dvac$SiteStationYear[is.na(dvac$shootlg)==F]),length)
+    colnames(temp_mean_nb)<-c("SiteStationYear","SLnbPIED")
+    mergefile1b<-merge(mergefile1,temp_mean_nb,all.x=T)
+    mergefile1<-mergefile1b
+```
+
+**For "number of frames per plot" :**
+
+```{r}
+# Creating the file with one single value of nbframe per SiteStationYear
+SiteStationYearNbframeMax<- aggregate(dvac$nbframe,list(SiteStationYear=dvac$SiteStationYear),max)
+colnames(SiteStationYearNbframeMax)<-c("SiteStationYear","nbframe")
+dim(SiteStationYearNbframeMax)
+
+# Creating the file with the correct value of nbframe for each StiteStationyear
+mergefile2<-merge(mergefile1,SiteStationYearNbframeMax,all.x=T)
+```
+
+**For "BUB" (Browsed / Unbrowsed" :**
+
+```{r}
+# Creating a file where BUB is measured only on shoots for which shootlength is also measured and where the browsed/unbrowsed has been checked
+        
+dvacSL<-dvac[is.na(dvac$shootlg)==F&is.na(dvac$BUB01)==F,]
+
+temp_BUB<-with(dvacSL,aggregate(BUB01,list(SiteStationYear=dvacSL$SiteStationYear),sum,na.rm=TRUE))
+colnames(temp_BUB)<-c("SiteStationYear","BUBsum")
+mergefile3<-merge(mergefile2,temp_BUB,by="SiteStationYear",all.x=T)
+   
+temp_BUB_nb<-aggregate(dvacSL$BUB01[is.na(dvacSL$BUB01)==F],list(SiteStationYear=dvacSL$SiteStationYear[is.na(dvacSL$BUB01)==F]),length)
+colnames(temp_BUB_nb)<-c("SiteStationYear","BUBnbPIED")
+mergefile3b<-merge(mergefile3,temp_BUB_nb,all.x=T)
+head(mergefile3b)
+dim(mergefile3b)
+dim(mergefile3b[is.na(mergefile3b$BUBsum)==T,])
+mergefile3<-mergefile3b
+    
+mf<-mergefile3
+mf$dens<-1/mf$nbframe
+mf$dens0<-ifelse(mf$nbframe==125&(mf$SLnbPIED  ==0|is.na(mf$SLnbPIED )==T),0,mf$dens)
+mf$propBUB<-mf$BUBsum/mf$BUBnbPIED        
+str(mf)
+summary(mf)
+head(mf)
+```
+
+**Aggregating the values of RESPONSE variable at the SITE level, so with "SiteYear" leading to 240 lines :**
+
+**For "shoot length" :**
+
+```{r}
+temp_meanSY<-with(dvac,aggregate(shootlg,list(SiteYear=dvac$SiteYear),mean,na.rm=TRUE))
+colnames(temp_meanSY)<-c("SiteYear","meanshootlg")
+mergefileSY1<-merge(fic1,temp_meanSY,by="SiteYear",all.x=T)
+head(mergefileSY1)
+dim(mergefileSY1)
+
+temp_mean_nbSY<-aggregate(dvac$shootlg[is.na(dvac$shootlg)==F],list(SiteYear=dvac$SiteYear[is.na(dvac$shootlg)==F]),length)
+colnames(temp_mean_nbSY)<-c("SiteYear","SLnbPIED")
+mergefile1SYb<-merge(mergefileSY1,temp_mean_nbSY,all.x=T)
+mergefile1SY<-mergefile1SYb
+
+#ggplot(mergefile1SY, aes(fill=exp, y=log(meanshootlg), x=year,colour=exp)) +
+#  facet_grid(~NEWloc)+ 
+#  facet_wrap(~NEWloc,nrow=3)+
+#  geom_point()+
+#  geom_line(aes(group=exp))
+```
+
+**For "number of frames per plot" :**
+
+```{r}
+temp_frameSY<-with(mf,aggregate(nbframe,list(year=mf$year,site=siteNumber),sum,na.rm=TRUE))
+
+mf[mf$siteNumber=="1NSB",]
+
+colnames(temp_frameSY)<-c("SiteYear","nbframe")
+mergefileSY2<-merge(mergefileSY1,temp_frameSY,by="SiteYear",all.x=T)
+head(mergefileSY2)
+dim(mergefileSY2)
+dim(mergefileSY2[is.na(mergefileSY2$nbframe)==T,])
+```
+
+**For "BUB" (Browsed / Unbrowsed" :**
+
+```{r}
+temp_BUBSY<-with(dvac,aggregate(BUB01,list(SiteYear=dvac$SiteYear),sum,na.rm=TRUE))
+colnames(temp_BUBSY)<-c("SiteYear","BUBsum")
+mergefileSY3<-merge(mergefileSY2,temp_BUBSY,by="SiteYear",all.x=T)
+head(mergefileSY3)
+dim(mergefileSY3)
+dim(mergefileSY3[is.na(mergefileSY3$BUBsum)==T,])
+```
+
+**Number of Vaccinium individuals measured in each station (= quadrat) a given year :**
+
+```{r}
+maxpiedSY<-aggregate(dvac$recNum,list(SiteYear=dvac$SiteYear),max,na.rm=TRUE)
+colnames(maxpiedSY)<-c("SiteYear","maxpied")
+mergefileSY4<-merge(mergefileSY3,maxpiedSY,by="SiteYear",all.x=T)
+dim(mergefileSY4)
+head(mergefileSY4)
+
+mfSY<-mergefileSY4
+str(mfSY)
+mfSY$propBUB<-mfSY$BUBsum/mfSY$maxpied
+```
+
+**Temp_mean has the mean shoot length for each 20x20m site (browsed and unbrowsed) for each year in each locality**, so temp_mean has the number of myrtillus individual for which shoot length has been measured
+
+```{r}
+temp_mean<-with(dvac,aggregate(shootlg,list(year=year,shortloc=NEWloc,exp),mean,na.rm=TRUE))
+colnames(temp_mean)<-c("year","shortloc","exp","sitemeanshootlg")
+```
+
+**Aggregation of shoot length data, the variance is calculated, and a dataframe or list called `temp_mean` with the aggregated results is updated** :
+
+```{r}
+temp_length<-with(dvac[!is.na(dvac$shootlg),],aggregate(shootlg,list(year=year,shortloc=NEWloc,exp),length))
+temp_var<-with(dvac[!is.na(dvac$shootlg),],aggregate(shootlg,list(year=year,shortloc=NEWloc,exp),var,na.rm=TRUE))
+temp_mean$length<-temp_length$x
+temp_mean$variance<-temp_var$x
+temp_mean$yearc<-as.numeric(as.character(temp_mean$year))
+temp_mean$lsitemeanshootlg<-log(temp_mean$sitemeanshootlg)
+```
+
+-   **`temp_length`** est une variable temporaire qui stocke les résultats de l'agrégation de la longueur des pousses (**`shootlg`**) en fonction de plusieurs variables : année (**`year`**), localisation courte (**`shortloc`**), et expérimentation (**`experiment`**).
+
+-   **`with(dvac[!is.na(dvac$shootlg),], ...)`** sélectionne les lignes où la longueur des pousses n'est pas manquante
+
+**Same for BUB** :
+
+```{r}
+temp_BUB<-with(dvac,aggregate(as.numeric(BUB01)-1,list(year=year,shortloc=NEWloc,exp),sum,na.rm=TRUE))
+temp_BUB$length<-temp_length$x
+dim(temp_BUB)
+```
+
+In summary, these lines of code aggregate the data for the variable "BUB" (- 1) by year, short location and experiment, calculate the sum of the aggregated values, then update **`temp_BUB`** by adding the results of the shoot length aggregation stored in **`temp_length`**
+
+**Creation of the line of code where a variable called "SL" contains the unique values of the "shortloc" column of the "temp_mean" dataframe :**
+
+```{r}
+SL<-unique(temp_mean$shortloc)
+```
+
+-   **`temp_mean$shortloc`** sélectionne la colonne "shortloc" du dataframe "temp_mean".
+
+-   **`unique()`** est une fonction qui extrait les valeurs uniques d'un vecteur ou d'une colonne de données.
+
+## **PREPARATION OF THE POINT INTERCEPT DATABASE (e)**
+
+```{r}
+e<-read.delim("PointIntercept.csv",sep=";")
+```
+
+**We rename all the variables**
+
+```{r}
+e$adminNames<-as.factor(word(e$administrativeNames,-1))
+e$shortloc<-as.factor(word(e$locality, 2,sep = fixed("|")))
+e$NEWloc<-as.factor(ifelse(e$experiment=="Browsed",
+                           str_sub(e$siteNumber,start=1,end=-2),str_sub(e$siteNumber,start=1,end=-3))) # use of the short code (as siteNumber) for LOCALITY
+e$siteNumber<-as.factor(e$siteNumber)
+e$experiment<-as.factor(e$experiment)
+e$year<-as.factor(e$year)
+e$yearc<-as.numeric(as.character(e$year))
+e$SiteStation<-as.factor(paste(e$siteNumber,e$stationNumber,sep="_"))
+e$SiteStationYear<-as.factor(paste(e$siteNumber,e$stationNumber,e$year,sep="_"))
+e$Count<-e$individualCount
+e$Region<-as.factor(mapvalues(e$NaTron_datasetName,from=unique(e$NaTron_datasetName),c("Hedmark","Telemark","Tingvoll","Trondelag")))
+e$exp<-e$experiment
+```
+
+**Creating a smaller file with columns of interest and short column names :**
+
+```{r}
+e2<-e[,c("Region","NEWloc","siteNumber","SiteStation","SiteStationYear","stationNumber","exp","year","yearc",
+      "Count","scientificName")]
+```
+
+**We choose the region**
+
+```{r}
+e2<-droplevels(e2[e2$Region=="Trondelag",])
+```
+
+**The following lines of code find the unique values of "SiteStationYear" in the "e2" dataframe, display the number of these unique values, and create a cross-table to count the occurrences of each unique pair of "SiteStationYear" and "scientificName" in the dataframe :**
+
+```{r}
+PI_id<-unique(e2$SiteStationYear)
+length(PI_id)
+ta1<-table(e2$SiteStationYear,e2$scientificName) 
+## the table with one line per sation per year per site, and one column per "Scientific name". There should be either 0 or 1
+# when there is more than 1 in a cell, this means that a "Scientific name" had several lines for a given station per year and per site
+# so this is a problem as there should be only one value for a given species in a given station for a given year and site. 
+
+```
+
+**Datafile with all modalities per station per site per year**
+
+```{r}
+pi0<-expand.grid(year=unique(e2$year),stationNumber=unique(e2$stationNumber ),NEWloc=unique(e2$NEWloc),exp=unique(e2$exp))
+pi0$exp<-mapvalues(pi0$exp,from=c("Browsed","Unbrowsed"),c("B","UB"))
+pi0$siteNumber<-paste(pi0$NEWloc,pi0$exp,sep="")
+pi0$SiteStationYear<-as.factor(paste(pi0$siteNumber,pi0$stationNumber,pi0$year,sep="_"))
+dim(pi0) 
+```
+
+**Datafile with all modalities per site per year for Trondelag** !!! 240 lines !!!
+
+```{r}
+pi1<-expand.grid(year=unique(e2$year),NEWloc=unique(e2$NEWloc),exp=unique(e2$exp))
+pi1$exp<-mapvalues(pi1$exp,from=c("Browsed","Unbrowsed"),c("B","UB"))
+pi1$siteNumber<-paste(pi1$NEWloc,pi1$exp,sep="")
+pi1$SiteYear<-as.factor(paste(pi1$siteNumber,pi1$year,sep="_"))
+dim(pi1)
+```
+
+**Creation of vac01 and SSY (**SiteStationYear) **sampled**
+
+```{r}
+## List of the "Sitestationyear" that have been sampled (i.e. whatever the species of plants counted)
+SSYsampled<-unique(e2$SiteStationYear)   
+length(SSYsampled)
+## table with the SiteStationyear sampled and a 0 if there was no myrtillus and a 1 if there was myrtillus
+
+tabvac<-table(e2$SiteStationYear,e2$scientificName)
+table(tabvac[,"Vaccinium myrtillus"])
+presabs_vac<-data.frame(SiteStationYear=rownames(tabvac),vac01=tabvac[,"Vaccinium myrtillus"])
+presabs_vac$vac01<-ifelse(presabs_vac$vac01==0,0,1)
+
+pi2<-merge(pi0,presabs_vac,all.x=T)
+```
+
+**Selecting only the lines with vaccinium myrtillus**
+
+```{r}
+evac<-droplevels(e2[e2$scientificName=="Vaccinium myrtillus",])
+head(evac)
+```
+
+**We aggregate and sum all counts of contact of vaccinium for each SiteStationYear**
+
+```{r}
+aggcount<-aggregate(evac$Count,list(SiteStationYear=evac$SiteStationYear),sum, na.rm=T)
+colnames(aggcount)<-c("SiteStationYear","Count")
+# Aggregation of Vaccinium contact counts for each "SiteStationYear" 
+    
+evac2<-unique(evac[,-which(names(evac) == "Count")]) 
+# we create a subfle with only the unique lines, removing the counts of myrtillus contact
+# Creation of a data subset with single rows of the "evac" dataframe
+
+evac3<-merge(evac2,aggcount,all.x=T) 
+## we add the aggregated myrtillus contact to each sampled SiteStationYear
+
+evac<-evac3
+
+evac$yearc<-as.numeric(as.character(evac$year)) 
+# "yearc" is continuous while "year" is a factor
+```
+
+**Merge the "pi2" dataframe with a sub-section of "evac" containing only the "SiteStationYear" and "Count" columns** :
+
+```{r}
+pi3<-merge(pi2,evac[,c("SiteStationYear","Count")],all.x=T)
+pi3$Count[pi3$vac01==0]<-0
+summary(pi3)
+```
+
+This adds blueberry contact counts to each "SiteStationYear" sampled.
+
+**We will work on the datafile with no NA :**
+
+```{r}
+evac<-droplevels(pi3[is.na(pi3$vac01)==F,])
+
+hist(evac$Count)
+```
+
+**This line of code converts the "year" variable in the "evac" dataframe into numerical format and stores the result in a new column called "yearc":**
+
+```{r}
+evac$yearc<-as.numeric(as.character(evac$year))
+```
+
+## **CREATING A UNIQUE FILE CONTAINING "POINT INTERCEPT" AND "SUMMER BROWSING"**
+
+**Merging point intercept (evac) and shootlength (mf) files :**
+
+```{r}
+head(mf)
+head(evac)
+```
+
+```{r}
+totm<-merge(mf,evac[,c("SiteStationYear","vac01","Count")],all.x=T)
+head(totm)
+dim(totm)
+summary(totm)
+```
+
+**Adding a few variables of use :**
+
+```{r}
+totm$SL01<-ifelse(is.na(totm$meanshootlg)==T&is.na(totm$nbframe)==F,0,1)
+totm$SL01[is.na(totm$meanshootlg)==T&is.na(totm$nbframe)==T]<-NA
+
+totm$dens<-1/totm$nbframe
+totm$dens[totm$SL01==0&totm$nbframe==125]<-0
+
+totm$BUBprop<-totm$BUBsum/totm$BUBnbPIED
+totm$BUBsum01<-as.factor(ifelse(totm$BUBsum>0,1,totm$BUBsum))
+
+summary(totm)
+```
+
+**Converting the "vac01" variable into a factor :**
+
+```{r}
+totm$vac01<-as.factor(totm$vac01)
+```
+
+**Create a new "totpca" dataframe with selected columns :**
+
+```{r}
+totpca<-totm[,c("NEWloc","stationNumber","siteNumber","meanshootlg","nbframe","Count","BUBsum01","BUBprop","year","exp","dens","vac01")]
+```
+
+**Definition of line names for "totpca" :**
+
+```{r}
+rownames(totpca)<-totm$SiteStationYear
+```
+
+## STATISCAL ANALYSIS
+
+### 1. Study of the "count" variable - from the POINT-INTERCEPT method with the 16 pins
+
+#### 1. 1. Summed at a station level
+
+```{r}
+
+```
+
+#### 1. 2. Presence / absence of Vaccinium - binomial
+
+Below, the script that will help me for the 0 inflated model for the response variable "count"
+
+```{r}
+#zipm0 = glmmTMB(count~spp +(1|site), zi=~spp, Salamanders, family=poisson)
+#zipm1 = glmmTMB(count~spp + mined +(1|site), zi=~spp, Salamanders, family=poisson)
+#zipm2 = glmmTMB(count~spp + mined +(1|site), zi=~spp + mined, Salamanders, family=poisson)
+#zipm3 = glmmTMB(count~spp * mined +(1|site), zi=~spp * mined, Salamanders, family=poisson)
+#zicmpm0 = glmmTMB(count~spp +(1|site), zi=~spp, Salamanders, family=compois)
+#zicmpm1 = glmmTMB(count~spp + mined +(1|site), zi=~spp, Salamanders, family=compois)
+#zicmpm2 = glmmTMB(count~spp + mined +(1|site), zi=~spp + mined, Salamanders, family=compois)
+#zicmpm3 = glmmTMB(count~spp * mined +(1|site), zi=~spp * mined, Salamanders, family=compois)
+```
+
+### 2. Study of the SUMMER BROWSING 
+
+#### 2. 1. Number of frames per plot –\> VARIABLE 1
+
+First, we look at the distribution of the nb of frames to find 10 blueberry plants per site, per treatment per locality
+
+**We filter the rows of the "totm" dataframe where the number of blueberries = 10**
+
+```{r}
+nbframe_10vac <- subset(totm, SLnbPIED == 10, select = c("SiteStationYear", "year", "stationNumber", "NEWloc", "exp", "siteNumber", "meanshootlg", "SLnbPIED", "nbframe", "BUBsum", "BUBnbPIED", "dens", "dens0", "propBUB", "vac01", "Count", "SL01", "BUBprop", "BUBsum01", "dens"))
+```
+
+**Display the graph of the number of frames per 10 individuals counted for each locality**
+
+```{r}
+ggplot(nbframe_10vac, aes(x = factor(NEWloc), y = nbframe)) +
+  geom_bar(stat = "summary", fun = "sum", fill = "skyblue", color = "black") +
+  labs(title = "Number of frames per 10 bilberry plants per locality",
+       x = "Locality",
+       y = "Number of frames") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+ANALYSIS: According to this graph, results vary from one locality to another. Indeed, some localities (where each locality contains 2 sites with a B or UB treatment) have a low number of frames per plot (e.g.: 1NS, 1S, 2B, BR, HI, KL, LA, MA, SE), which means that these localities would have a high density of blueberries and perhaps a low browsing rate (to be compared between sites per locality). However, localities with a high number of frames per plot would show a low density of bilberry plants, especially SL, where bilberry cover must be very low or even absent (calculate next with the count variable).
+
+**Display the graph of the number of frames per 10 individuals counted for each B/UB treatment per locality**
+
+```{r}
+ggplot(nbframe_10vac, aes(x = factor(exp), y = nbframe, fill = NEWloc)) +
+  geom_bar(stat = "summary", fun = "sum", fill = "skyblue", color = "black") +
+  labs(title = "Number of frames per 10 bilberry plants per treatment B or UB per locality",
+       x = "Treatment",
+       y = "Number de frames") +
+  facet_wrap(~ NEWloc) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+ANALYSIS : 9 out of 15 localities show higher frame counts for Unbrowsed sites than Browsed sites. This would mean that ungrazed sites would have a lower density of bilberry vines than grazed sites. This is particularly true of localities 1K, 2V, MA and SL, where blueberry cover is much lower at Unbrowsed sites than at Browsed sites.
+
+**Display the graph of the number of frames per 10 individuals counted for each B/UB treatment per year**
+
+```{r}
+nbframe_10vac$yearc<-as.numeric(as.character(nbframe_10vac$year))
+
+ggplot(nbframe_10vac, aes(x = factor(exp), y = nbframe, fill = yearc)) +
+  geom_bar(stat = "summary", fun = "sum", fill = "skyblue", color = "black") +
+  labs(title = "Number of frames per 10 bilberry plants per treatment B or UB per year",
+       x = "Treatment",
+       y = "Number de frames") +
+  facet_wrap(~ yearc) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+ANALYSIS: This graph shows the average number of frames per plot for all localities combined over the years. Unbrowsed sites show a higher average number of frames over the years, which means that blueberry density would be lower in unbrowsed sites than in browsed sites. And this results are the same all along the years of the study so from 2008 to 2023.
+
+This raises the question of whether treatment actually has an impact on blueberry density (compared with count)..?
+
+Also, why is there less blueberry cover in the unbrowsed sites (due to microtines? canopy?) ?
+
+**Display the graph of the number of frames per 10 individuals counted for locality per year**
+
+```{r}
+ggplot(nbframe_10vac, aes(x = factor(NEWloc), y = nbframe, fill = yearc)) +
+  geom_bar(stat = "summary", fun = "sum", fill = "skyblue", color = "black") +
+  labs(title = "Number of frames per 10 billberry plants per locality per year",
+       x = "Locality",
+       y = "Number de frames") +
+  facet_wrap(~ yearc) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+**Display the graph of the density of myrtillus for each locality per year**
+
+```{r}
+ggplot(nbframe_10vac, aes(x = factor(NEWloc), y = dens, fill = yearc)) +
+  geom_bar(stat = "summary", fun = "sum", fill = "skyblue", color = "black") +
+  labs(title = "Density of bilberry per locality per year",
+       x = "Locality",
+       y = "Density of Vaccinium") +
+  facet_wrap(~ yearc) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+ANALYSIS: From this graph, we can see that blueberry density in 2010 was much higher than in other years (why in 2010? Year with good weather conditions in Trondelag?
+
+In 2016, too, the density was high, although it varied greatly between different localities.
+
+However, from 2019 onwards, bilberry cover is declining in the various localities, and will continue to do so until 2023.
+
+#### 2. 2. Shoot length (lmer) –\> VARIABLE 2
+
+When shoots are found : length of myrtillus shoots –\> Linear model (lmer)
+
+**Realization of a lmer linear model with bilberry shoot length versus years by locality with random effects exp/NEWloc, Site/Station, exp/year :**
+
+```{r}
+library(ggplot2)
+library(lme4)
+
+totm$yearc<-as.numeric(as.character(totm$year))
+
+# Creating the lmer model
+model <- lmer(meanshootlg ~ yearc + (1 | NEWloc) + (1 | stationNumber/siteNumber) + (1 | exp/yearc), data = totm)
+summary(model)
+
+# Prediction of model fitted values for each combination of yearc and NEWloc
+#predictions <- data.frame(predict(model, newdata = expand.grid(yearc = unique(totm$yearc), NEWloc = unique(totm$NEWloc))))
+# pb dans cette ligne, apparment le "siteNumber" n'est pas trouvé pourtant il est présent dans totm
+
+# Graph of interaction between yearc and NEWloc
+# ggplot(model, aes(x = yearc, y = .fitted, group = NEWloc, color = NEWloc)) +
+# geom_line() +
+# labs(title = "Interaction Plot: Bilberry shoot length by year and location",
+#      x = "Year",
+#      y = "Length of bilberry shoots") +
+# theme_minimal()
+
+### Graph of interaction between yearc and NEWloc
+ggplot(totm, aes(x = yearc, y = meanshootlg, group = NEWloc, color = NEWloc)) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Interaction Plot: Bilberry shoot length by year and location",
+       x = "Year",
+       y = "Length of bilberry shoots") +
+  theme_minimal()
+
+```
+
+GRAPH ANALYSIS: According to this graph, shoot length increases for each locality over the years. What's more, there was no sharp decline from 2013 to 2014, which would otherwise correspond to the winter drought.
+
+SUMMARY MODEL ANALYSIS :
+
+-   siteNumber:stationNumber: There is significant variance attributed to this interaction between siteNumber and stationNumber, suggesting that there is variability between stations within sites.
+
+-   yearc:exp: There is significant variance attributed to this interaction between year and experiment, indicating that there is variability between years within each experiment.
+
+-   NEWloc: There is significant variance attributed to NEWloc, indicating that there is variability between locations.
+
+-   stationNumber: There is significant variance attributed to stationNumber, indicating variability between stations. exp: There is very little variance attributed to exp, which could be due to low variability between experiments. Residual: The residual variance is also given.
+
+**Test of a linear model in which random effects such as (1 \| yearc) or (1 \| NEWloc) have been removed for the model to run :**
+
+```{r}
+
+totm$yearc<-as.numeric(as.character(totm$year))
+
+# Création du modèle LMM
+model1 <- lmer(meanshootlg ~ year + NEWloc + exp + (1|siteNumber/stationNumber), data = totm, control=lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=10000)))
+
+# Résumé du modèle
+summary(model1)
+
+```
+
+ANALYSIS :
+
+-   For fixed-effect coefficients : A positive coefficient for the year 2012 indicates an average increase in the length of blueberry shoots in 2012 compared with the reference.
+
+**Test of a linear model in which random effects such as (1\|siteNumber/stationNumber) and (1\|NEWloc) have** **been removed for the model to run :**
+
+```{r}
+
+totm$yearc<-as.numeric(as.character(totm$year))
+
+# Création du modèle LMM
+model1 <- lmer(meanshootlg ~ year + NEWloc + exp + (1|yearc), data = totm, control=lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=10000)))
+
+# Résumé du modèle
+summary(model1)
+
+```
+
+ANALYSIS : Random effects for yearc indicate that response variability (meanshootlg) varies from year to year. For example, if a specific year has a higher variance than other years, this means that there is more variability in the response that year, even after taking into account the explanatory variables included in the model.
+
+#### 2.3. When shoots are found : whether they show signs of browsing (at station level : nb of shoots browsed / number of shoots evaluated) –\> VARIABLE 3
+
+ce wk : essayer de faire les modèles binomiaux comme ci-dessous pour étudier lorsque les pousses sont trouvés si elles sont broutées ou non
+
+et étudier voir au niveau de la station le nb de pousses broutées par rapport au nb de pousses recensées.
+
+faire des glmm binomial et des graphes pour voir le nb de pousses broutées par rapport au non broutées
+
+essayer aussi d'étudier la densité de myrtilles avec d'autres modèles que ceux que j'ai fait avant et d'autres graphes pour comparer ensuite avec "count"
+
+```{r}
+g1re<-glmer(vac01~yearc*exp+exp*NEWloc+(1|siteNumber/stationNumber ),glmerControl(optimizer = c( "bobyqa")), family="binomial",data=evac)
+#dredge(g1re)
+#anova(g1re,test="Chisq")
+summary(g1re)
+```
+
+```{r}
+
+totpca<-na.omit(totpca)
+summary(totpca)
+dim(totpca)
+p1<-dudi.mix(totpca[,c("meanshootlg","dens","BUBprop","BUBsum01","Count","vac01")],scannf = FALSE, nf = 2)
+p1<-dudi.mix(totpca[,c("meanshootlg","dens","BUBprop","Count")],scannf = FALSE, nf = 2)
+scatter(p1)
+    s.class(p1$li,totpca$NEWloc,col=1:15)
+    s.corcircle(p1$c1)
+    
+## the scores, added to the file
+p1SC<-p1$l1
+p1SC$SiteStationYear<-rownames(totpca)
+totpca$SiteStationYear<-rownames(totpca)
+totSC<-merge(totpca,p1SC,all.x=T)
+head(totSC)
+
+
+## model on the scores
+
+h1<-lmer(RS1~(NEWloc+exp+year)^2+(1|siteNumber/stationNumber),data=totm)
+
+anova(h1)
+summary(h1)
+dredge(h1)
+visreg(h1,"year",by="exp")
+visreg(h1,"exp",by="year")
+visreg(h1,"exp",by="NEWloc")
+
+totSC$pred1<-predict(h1,re.form=NA)
+#totSC$se.pred1<-predict(h1,se.fit=T)$se.fit
+
+h2<-lmer(RS2~(NEWloc+exp+year)^2+(1|siteNumber/stationNumber),data=totSC)
+h2<-lm(RS2~(NEWloc+exp+year)^2,data=totSC)
+
+  anova(h2)
+  dredge(h2)
+  visreg(h2,"year",by="exp")
+  visreg(h2,"exp",by="year")
+  visreg(h2,"exp",by="NEWloc")
+
+  totSC$pred2<-predict(h2,re.form=NA)
+  #totSC$se.pred2<-predict(h2,se.fit=T)$se.fit
+  
+  ggplot(totSC, aes(fill=exp, y=pred1, x=year,colour=exp)) +
+    facet_grid(~NEWloc)+ 
+    facet_wrap(~NEWloc,nrow=3)+
+    geom_point(aes(group=exp))+
+    geom_line(aes(group=as.factor(exp)))
+  
+  ggplot(totSC, aes(fill=exp, y=pred2, x=year,colour=exp)) +
+    facet_grid(~NEWloc)+ 
+    facet_wrap(~NEWloc,nrow=3)+
+    geom_point(aes(group=exp))+
+    geom_line(aes(group=as.factor(exp)))
+  
+
+head(totSC)
+```

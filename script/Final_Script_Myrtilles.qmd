@@ -1,0 +1,389 @@
+---
+title: "Final script myrtilles"
+format: docx
+editor: visual
+---
+
+# Introduction
+
+\# Cette courte introduction est à ajouter au rapport.
+
+Within this report, 3 response variables were studied: the effect of treatment (B, UB), shoot length and density.
+
+The 1st response variable is studied when shoots are measured and whether or not they show signs of browsing, i.e. respectively browsed unbrowsed, which corresponds to the treatment. The 2nd variable (shoot length) presents the measured shoot length. Finally, the 3rd variable corresponds to the number of blueberries counted at the site (this is the counts of contacts using the point-intercept method).
+
+The aim of this study is therefore to examine these 3 response variables. To do this, covariates are also studied: climate (temperature and snow cover), productivity at each site and competition for the canopy (specify the covariate studied later). For this, fixed and random effects have been selected. The fixed effects concern the year, climate, productivity at each site (within localities) and competition for the canopy (specify the covariate studied later).
+
+# Trondelag
+
+Loading packages
+
+```{r}
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(plyr)
+library(visreg)
+library(nlme)
+library(MASS)
+library(lme4)
+library(MuMIn)
+library(corrplot)
+library(sandwich)
+library(ade4)
+```
+
+Trondelag database added
+
+```{r}
+# dvac permet de travailler avec la base de données initiale, où un pied de myrtille = 1 ligne
+dvac<-read.csv("dvac.csv", sep=",")
+
+# totm_site représente un dataframe simplifié de dvac, correspond à la SL à l'échelle des sites avec ajout de variables 
+totm_site<-read.csv("totm_site.csv", sep=",")
+
+# totm représente la base de données "travaillée", simplifiée de dvac avec ajout de variables et à l'échelle des stations
+totm<-read.csv("totm.csv", sep=",")
+```
+
+Identify Missing Values
+
+```{r}
+# Remove na 
+#totm <- na.omit(totm)
+#dvac <- na.omit(dvac)
+```
+
+Essai package emmeans avec Trondelag
+
+```{r}
+
+library(emmeans) 
+library(magrittr) 
+
+# Création du dataframe
+dat <- data.frame(shootlg, exp, yearc, NEWloc)
+dat$shootlg <- as.numeric(dat$shootlg)
+
+# Vérifier la structure des données
+str(dat)
+
+# Modèle linéaire
+fit1 <- lm(log(shootlg) ~ exp * scale(yearc) + exp * NEWloc + (1 | year) + NEWloc * scale(yearc), data = dat)
+
+# Moyennes marginales
+emm1 <- emmeans(fit1, specs = pairwise ~ exp * scale(yearc) + exp * NEWloc + NEWloc * scale(yearc))
+
+# Afficher les moyennes marginales
+emm1$emmeans
+
+# Comparaisons des moyennes marginales
+emm1$contrasts
+
+# Moyennes marginales avec ajustement de type réponse
+emmeans(fit1, specs = pairwise ~ exp * scale(yearc) + exp * NEWloc + NEWloc * scale(yearc), type = "response")
+
+# Moyennes marginales sans ajustement
+emm1.1 <- emmeans(fit1, specs = pairwise ~ exp * scale(yearc) + exp * NEWloc + NEWloc * scale(yearc), type = "response", adjust = "none")
+emm1.1
+
+# Intervalles de confiance
+emm1.1$contrasts %>% confint()
+
+# Résumé des contrastes
+emm1.1$contrasts %>% summary(infer = TRUE)
+
+# Transformation en dataframe
+emm1.1$emmeans %>% as.data.frame()
+
+# Moyennes marginales avec spécifications différentes
+emm2 <- emmeans(fit1, specs = pairwise ~ exp | scale(yearc) + exp | NEWloc + NEWloc | scale(yearc), type = "response")
+emm2
+
+# Comparaisons des moyennes marginales
+emm2$contrasts %>% rbind() 
+
+# Autres analyses
+emmeans(fit1, specs = pairwise ~ exp)
+emmeans(fit1, specs = trt.vs.ctrl ~ exp:NEWloc)
+emmeans(fit1, specs = trt.vs.ctrlk ~ exp:NEWloc)
+emmeans(fit1, specs = trt.vs.ctrlk ~ exp:NEWloc, ref = 2)
+emmeans(fit1, specs = trt.vs.ctrlk ~ exp:NEWloc, ref = 2, reverse = TRUE)
+
+# Moyennes marginales avec spécification ~ f1:f2
+emm3 <- emmeans(fit1, specs = ~ exp:NEWloc, type = "response")
+emm3
+
+# Contrastes pairwise
+contrast(emm3, method = "pairwise", adjust = "none")
+```
+
+```{r}
+compareGLM(model1, model2, model3)
+```
+
+## Treatment B/UB
+
+#####Pour la variable experiment (B/UB) (dire à quoi on s'attend#####
+
+### Transformation
+
+```{r}
+# totm
+hist(log(totm$propBUB/(1-totm$propBUB)))
+# La transformation log est choisie ?
+```
+
+### Model GLMM TMB
+
+**Modèle GLMM TMB binomial avec BUB01 de dvac**
+
+```{r}
+library(glmmTMB)
+
+# dvac (1 pied de myrtilles par ligne) avec BUB01
+fm1 <- glmmTMB(BUB01~ exp * scale(yearc) + exp * NEWloc + (1 | year) + NEWloc * scale(yearc), family = binomial(), data = dvac, na.action = na.pass)
+
+# Plusieurs combinaisons de modèle
+dredge_fm1 <- dredge(fm1)
+print(dredge_m1)
+```
+
+Pour m1, le meilleur modèle est le 64.
+
+**Modèle GLMM TMB négative binomiale avec BUBnbPIED de totm**
+
+```{r}
+# 1. Modèle fm2 avec totm et BUBnbPIED
+library(glmmTMB)
+library(nlme)
+fm2 <- glmmTMB(BUBnbPIED ~ exp * scale(yearc) + exp * NEWloc + (1 | year) + NEWloc * scale(yearc), family = nbinom1(), data = totm)
+
+#dredge_fm2 <- dredge(fm2)
+#print(dredge_fm2)
+
+# 2. Extraction des prédictions du modèle
+newdat <- expand.grid(yearc = unique(totm$yearc), exp = c("B", "UB"), NEWloc = unique(totm$NEWloc))
+mm <- model.matrix(delete.response(terms(fm2)), newdat)
+newdat$distance <- drop(mm %*% fixef(fm2)[["cond"]])
+predvar <- diag(mm %*% vcov(fm2)[["cond"]] %*% t(mm))
+newdat$SE <- sqrt(predvar)
+newdat$SE2 <- sqrt(predvar + sigma(fm2)^2)
+
+# 3. Création du graphique avec ggplot2
+library(ggplot2)
+
+ggplot(data = newdat, aes(x = yearc, y = distance, group = exp, color = exp)) +
+  geom_line() +
+  geom_point() +
+  geom_errorbar(aes(ymin = distance - 2 * SE, ymax = distance + 2 * SE), width = 0.2) +
+  geom_errorbar(aes(ymin = distance - 2 * SE2, ymax = distance + 2 * SE2), width = 0.2, linetype = "dashed") +
+  labs(title = "Variation de BUBnbPIED au fil des années pour chaque localité de Trondelag",
+       x = "Années",
+       y = "Nb de pieds broutés",
+       color = "Traitement") +
+  theme_minimal() +
+  facet_wrap(~NEWloc)
+
+```
+
+D'après le graphique ci-dessus on peut voir que le nb de pieds de broutés augmente au fur et à mesure des années et que le nb de pieds broutés est supérieur dans les sites browsed que les sites unbrowsed.
+
+## Biomass (count)
+
+#####Pour la variable count dire à quoi on s'attend#####
+
+### Transformation
+
+```{r}
+# Créer un histogramme de la variable d'origine
+ggplot(totm, aes(Count)) +
+  geom_histogram() +
+  labs(title = "Distribution du nb de count")
+# On a fait pareil en remplaçant : "dvac, aes(shootlg)" par "totm, aes(meanshootlg)" dans ggplot pour les différentes transformations
+
+# Essayer différentes transformations et tracer les distributions
+ggplot(totm, aes(log(Count))) +
+  geom_histogram() +
+  labs(title = "Transformation logarithmique")
+
+ggplot(totm, aes(sqrt(Count))) +
+  geom_histogram() +
+  labs(title = "Transformation racine carrée")
+
+# Pas de transformation
+```
+
+### Model GLMM TMB - negative binomial
+
+Count
+
+```{r}
+library(glmmTMB)
+
+# totm (car pas de count dans dvac)
+
+# Représentation du nombre de count pour avoir nue vision de l'évolution
+ggplot(data = totm, aes(x = yearc, y = Count, color = exp)) +
+  geom_point() +
+  geom_line(aes(group = exp)) +
+  labs(title = "Variation du nb de count au fil des années pour chaque localité de Trondelag",
+       x = "Années",
+       y = "Count",
+       color = "Traitement") +
+  theme_minimal() +
+  facet_wrap(~NEWloc) 
+
+
+# 1. Modèle m2 avec totm et BUBnbPIED
+library(glmmTMB)
+library(nlme)
+#m2 <- glmmTMB(Count ~ exp * scale(yearc) + exp * NEWloc + (1 | year) + NEWloc * scale(yearc), family = nbinom1(), data = totm, na.action = na.pass)
+
+#dredge_m2 <- dredge(m2)
+#print(dredge_m2)
+
+
+# Meilleur modèle après dredge : 
+m2 <- glmmTMB(Count ~ (1 | year) + exp * NEWloc + NEWloc * scale(yearc), family = nbinom1(), data = totm, na.action = na.pass)
+
+# 2. Extraction des prédictions du modèle
+newdat <- expand.grid(yearc = unique(totm$yearc), 
+                      exp = c("B", "UB"), 
+                      NEWloc = unique(totm$NEWloc))
+mm <- model.matrix(delete.response(terms(m2)), newdat)
+newdat$distance <- drop(mm %*% fixef(m2)[["cond"]])
+predvar <- diag(mm %*% vcov(m2)[["cond"]] %*% t(mm))
+newdat$SE <- sqrt(predvar)
+newdat$SE2 <- sqrt(predvar + sigma(m2)^2)
+
+# 3. Création du graphique avec ggplot2
+library(ggplot2)
+
+ggplot(data = newdat, aes(x = yearc, y = distance, color = exp)) +
+  geom_point() +
+  geom_line(aes(group = exp)) +
+  geom_smooth(aes(group = exp), method = "lm", se = FALSE, linetype = "dashed") +
+  geom_errorbar(aes(ymin = distance - 2 * SE, ymax = distance + 2 * SE), width = 0.2) +
+  geom_errorbar(aes(ymin = distance - 2 * SE2, ymax = distance + 2 * SE2), width = 0.2, linetype = "dashed") +
+  labs(title = "Variation du nb de count au fil des années pour chaque localité de Trondelag",
+       x = "Années",
+       y = "Count",
+       color = "Traitement") +
+  theme_minimal() +
+  facet_wrap(~NEWloc) +
+   coord_cartesian(ylim = c(0, 5))
+```
+
+Le nb de count augmente au fil des années sauf pour AV et LA. Pour B et UB.
+
+Le nb de count est similaire dans les 2 parcelles (faire commencer à 0).
+
+### Model GLMM TMB - binomial
+
+Présence / absence de myrtilles (vac01)
+
+```{r}
+library(glmmTMB)
+
+# totm (car pas de count dans dvac)
+#m3 <- glmmTMB(vac01 ~ exp * scale(yearc) + exp * NEWloc + (1 | year) + NEWloc * scale(yearc), family = binomial(), data = totm, na.action = na.pass)
+
+# Afficher plusieurs combinaisons de modèle
+#dredge_m3 <- dredge(m3)
+#print(dredge_m3)
+
+# Meilleur modèle (retirer exp:NEW, exp:scl(yrc) et NEW:scl(yrc))
+m3 <- glmmTMB(vac01 ~ (1 | year) + NEWloc + exp + scale(yearc), family = binomial(), data = totm, na.action = na.pass)
+
+# Obtenir les prédictions du modèle
+totm$predicted <- predict(m3, type = "response")
+
+# Tracer les prédictions
+ggplot(totm, aes(x = yearc, y = predicted, color = exp)) +
+  geom_point() +
+  geom_smooth(method = "glm", method.args = list(family = "binomial"), se = FALSE) +
+  facet_wrap(~ NEWloc) +
+  labs(title = "Prédictions du modèle glmmTMB",
+       x = "Années",
+       y = "Probabilité de vac01",
+       color = "Traitement") +
+  theme_minimal() +
+  ylim(0.25, 1) 
+```
+
+## Shoot length
+
+#####Pour la variable shoot length (dire à quoi on s'attend)#####
+
+### Transformation
+
+```{r}
+# Créer un histogramme de la variable d'origine
+ggplot(dvac, aes(shootlg)) +
+  geom_histogram() +
+  labs(title = "Distribution de la SL")
+# On a fait pareil en remplaçant : "dvac, aes(shootlg)" par "totm, aes(meanshootlg)" dans ggplot pour les différentes transformations
+
+# Essayer différentes transformations et tracer les distributions
+ggplot(dvac, aes(log(shootlg))) +
+  geom_histogram() +
+  labs(title = "Transformation logarithmique")
+
+ggplot(dvac, aes(sqrt(shootlg))) +
+  geom_histogram() +
+  labs(title = "Transformation racine carrée")
+
+# La transformation log est sélectionnée pour la variable de réponse SL
+```
+
+```{r}
+# On applique la transformation log à SL dans dvac
+log_shootlg <- log(dvac$shootlg)
+# On applique la transformation log à SL dans totm
+log_shootlg <- log(totm$meanshootlg)
+```
+
+### Some graphs
+
+```{r}
+hist(log(mf$meanshootlg))
+hist(log(mf$meanshootlg[mf$exp=="B"])) 
+hist(log(mf$meanshootlg[mf$exp=="UB"]))
+```
+
+### Model lme
+
+```{r}
+library(nlme)
+
+# 1. Modèle dvac - shoot length
+m4 <-lme(log_shootlg ~ exp*scale(yearc) + exp*NEWloc + NEWloc*scale(yearc), data = dvac, random = ~1 | year)
+
+# même modèle mais avec totm pour la mean shoot length
+m4_bis <-lme(log_meanshootlg ~ exp*scale(yearc) + exp*NEWloc + NEWloc*scale(yearc), data = totm, random = ~1 | year)
+
+# Afficher plusieurs combinaisons de modèle
+#dredge_m4 <- dredge(m4)
+#dredge_m4_bis <- dredge(m4_bis)
+#print(dredge_m4)
+#print(dredge_m4_bis)
+
+# Au finale on garde m4 avec toutes les variables, c'est le meilleur modèle pour dvac et totm
+
+
+```
+
+## 
+
+# Telemark
+
+Telemark database added
+
+```{r}
+# dvac permet de travailler avec la base de données initiale 
+gvac<-read.csv("gvac.csv", sep=",")
+
+# totn représente la base de données "travaillée", simplifiée de dvac avec ajout de variables
+totn<-read.csv("totn.csv", sep=",")
+```
